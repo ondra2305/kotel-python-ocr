@@ -1,0 +1,15 @@
+[Unit]
+Description=Boiler Display OCR MQTT Timer
+Requires=boilerocr-mqtt-oneshot.service
+
+[Timer]
+# Run every 60 seconds with high accuracy
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+# Catch up missed runs if system was off
+Persistent=false
+
+[Install]
+WantedBy=timers.target

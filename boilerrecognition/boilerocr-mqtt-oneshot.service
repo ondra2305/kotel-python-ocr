@@ -1,0 +1,17 @@
+[Unit]
+Description=Boiler Display OCR MQTT Service (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/home/admin/boilerocr
+ExecStart=/home/admin/boilerocr/.venv/bin/python /home/admin/boilerocr/boiler-mqtt-oneshot.py
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits for faster execution
+Nice=0
+IOSchedulingClass=realtime
+IOSchedulingPriority=0

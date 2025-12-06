@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ROI Calibrator</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding: 20px; }
+        .roi-input-group { margin-bottom: 10px; padding: 10px; border-left: 3px solid; }
+        .coord-label { font-size: 0.85em; color: #666; }
+
+        #canvas-wrapper {
+            overflow: auto;
+            max-width: 100%;
+            max-height: 70vh;
+            border: 1px solid #ddd;
+            position: relative;
+        }
+
+        #canvas-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        #image-canvas {
+            display: block;
+        }
+
+        .zoom-controls {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .zoom-level {
+            min-width: 60px;
+            text-align: center;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <h1>Interactive ROI Calibrator</h1>
+        <p class="text-muted">Drag boxes to reposition, drag corners to resize</p>
+        <hr>
+
+        <div class="row">
+            <!-- Left: Canvas -->
+            <div class="col-md-8">
+                <div class="mb-3">
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+                            Upload File
+                        </button>
+                        <button class="btn btn-success" onclick="loadFromCamera()">
+                            Load from Camera
+                        </button>
+                    </div>
+
+                    <div class="zoom-controls ms-3 d-inline-flex">
+                        <button class="btn btn-sm btn-secondary" onclick="zoomOut()">-</button>
+                        <span class="zoom-level" id="zoom-level">100%</span>
+                        <button class="btn btn-sm btn-secondary" onclick="zoomIn()">+</button>
+                        <button class="btn btn-sm btn-info" onclick="resetZoom()">Reset</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="fitToScreen()">Fit</button>
+                    </div>
+                </div>
+
+                <input type="file" id="file-input" accept="image/*" style="display:none" onchange="handleFileSelect(event)">
+
+                <div id="status" class="alert" style="display:none"></div>
+
+                <div id="canvas-wrapper" style="display:none">
+                    <div id="canvas-container">
+                        <canvas id="image-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="mt-3">
+                    <button class="btn btn-success btn-lg" onclick="saveConfig()">Save Configuration</button>
+                    <button class="btn btn-secondary" onclick="exportConfig()">Export Code</button>
+                </div>
+            </div>
+
+            <!-- Right: Coordinates (read-only, auto-updated) -->
+            <div class="col-md-4">
+                <h4>ROI Coordinates</h4>
+                <small class="text-muted">Auto-updated when you drag boxes</small>
+
+                <div class="roi-input-group mt-3" style="border-left-color: #00ff00;">
+                    <label class="form-label"><strong>Flame Icon</strong></label>
+                    <div class="row g-2">
+                        <div class="col-3">
+                            <label class="coord-label">y1</label>
+                            <input type="number" class="form-control form-control-sm" id="ROI_FLAME_ICON_0" readonly>
+                        </div>
+                        <div class="col-3">
+                            <label class="coord-label">y2</label>
+                            <input type="number" class="form-control form-control-sm" id="ROI_FLAME_ICON_1" readonly>
+                        </div>
+                        <div class="col-3">
+                            <label class="coord-label">x1</label>
+                            <input type="number" class="form-control form-control-sm" id="ROI_FLAME_ICON_2" readonly>
+                        </div>
+                        <div class="col-3">
+                            <label class="coord-label">x2</label>
+                            <input type="number" class="form-control form-control-sm" id="ROI_FLAME_ICON_3" readonly>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="roi-input-group" style="border-left-color: #0000ff;">
+                    <label class="form-label"><strong>Flame Level</strong></label>
+                    <div class="row g-2">
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_BAR_GRAPH_0" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_BAR_GRAPH_1" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_BAR_GRAPH_2" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_BAR_GRAPH_3" readonly></div>
+                    </div>
+                </div>
+
+                <div class="roi-input-group" style="border-left-color: #ffa500;">
+                    <label class="form-label"><strong>Heating</strong></label>
+                    <div class="row g-2">
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HEATING_ICON_0" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HEATING_ICON_1" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HEATING_ICON_2" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HEATING_ICON_3" readonly></div>
+                    </div>
+                </div>
+
+                <div class="roi-input-group" style="border-left-color: #ffff00;">
+                    <label class="form-label"><strong>Hot Water</strong></label>
+                    <div class="row g-2">
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HOT_WATER_ICON_0" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HOT_WATER_ICON_1" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HOT_WATER_ICON_2" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_HOT_WATER_ICON_3" readonly></div>
+                    </div>
+                </div>
+
+                <div class="roi-input-group" style="border-left-color: #ff00ff;">
+                    <label class="form-label"><strong>Temperature</strong></label>
+                    <div class="row g-2">
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_TEMPERATURE_0" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_TEMPERATURE_1" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_TEMPERATURE_2" readonly></div>
+                        <div class="col-3"><input type="number" class="form-control form-control-sm" id="ROI_TEMPERATURE_3" readonly></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div class="modal fade" id="exportModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Export Configuration</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <h6>Python:</h6>
+                    <textarea id="export-python" class="form-control" rows="8" readonly></textarea>
+                    <h6 class="mt-3">JSON:</h6>
+                    <textarea id="export-json" class="form-control" rows="8" readonly></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let canvas, ctx, image = null;
+        let zoomLevel = 1.0;
+        let currentImagePath = '';
+        let rois = {
+            'ROI_FLAME_ICON': {coords: [350, 530, 500, 540], color: '#00ff00', label: 'Flame'},
+            'ROI_BAR_GRAPH': {coords: [350, 530, 540, 580], color: '#0000ff', label: 'Level'},
+            'ROI_HEATING_ICON': {coords: [370, 440, 650, 730], color: '#ffa500', label: 'Heat'},
+            'ROI_HOT_WATER_ICON': {coords: [360, 440, 590, 650], color: '#ffff00', label: 'Water'},
+            'ROI_TEMPERATURE': {coords: [140, 260, 520, 650], color: '#ff00ff', label: 'Temp'}
+        };
+        let dragging = null, resizing = null, dragStart = {x: 0, y: 0};
+
+        window.addEventListener('load', () => {
+            canvas = document.getElementById('image-canvas');
+            ctx = canvas.getContext('2d');
+            loadConfig();
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('wheel', handleWheel, {passive: false});
+        });
+
+        function handleWheel(e) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                    zoomIn();
+                } else {
+                    zoomOut();
+                }
+            }
+        }
+
+        function zoomIn() {
+            if (zoomLevel < 4.0) {
+                zoomLevel = Math.min(4.0, zoomLevel + 0.25);
+                updateZoom();
+            }
+        }
+
+        function zoomOut() {
+            if (zoomLevel > 0.25) {
+                zoomLevel = Math.max(0.25, zoomLevel - 0.25);
+                updateZoom();
+            }
+        }
+
+        function resetZoom() {
+            zoomLevel = 1.0;
+            updateZoom();
+        }
+
+        function fitToScreen() {
+            if (image) {
+                const wrapper = document.getElementById('canvas-wrapper');
+                const maxWidth = wrapper.clientWidth - 20;
+                const maxHeight = wrapper.clientHeight - 20;
+                zoomLevel = Math.min(maxWidth / image.width, maxHeight / image.height, 1.0);
+                updateZoom();
+            }
+        }
+
+        function updateZoom() {
+            if (image) {
+                canvas.width = image.width * zoomLevel;
+                canvas.height = image.height * zoomLevel;
+                document.getElementById('zoom-level').textContent = Math.round(zoomLevel * 100) + '%';
+                drawCanvas();
+            }
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('image', file);
+            showStatus('Uploading...', 'info');
+            fetch('/upload', {method: 'POST', body: formData})
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    currentImagePath = d.filename;
+                    loadRawImage(d.filename);
+                    showStatus('Loaded: ' + d.width + 'x' + d.height, 'success');
+                } else showStatus('Error: ' + d.error, 'danger');
+            });
+        }
+
+        function loadFromCamera() {
+            showStatus('Loading camera...', 'info');
+            fetch('/load_camera', {method: 'POST'})
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    currentImagePath = d.filename;
+                    loadRawImage(d.filename);
+                    showStatus('Loaded from camera: ' + d.width + 'x' + d.height, 'success');
+                } else showStatus('Error: ' + d.error, 'danger');
+            });
+        }
+
+        function loadRawImage(filename) {
+            image = new Image();
+            image.onload = function() {
+                const wrapper = document.getElementById('canvas-wrapper');
+                const maxW = wrapper.clientWidth || 800;
+                zoomLevel = Math.min(1.0, maxW / image.width);
+                canvas.width = image.width * zoomLevel;
+                canvas.height = image.height * zoomLevel;
+                document.getElementById('canvas-wrapper').style.display = 'block';
+                updateZoom();
+            };
+            image.src = '/raw_image/' + filename + '?' + Date.now();
+        }
+
+        function drawCanvas() {
+            if (!image) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+            for (const [name, roi] of Object.entries(rois)) {
+                const [y1, y2, x1, x2] = roi.coords;
+                const sx = x1 * zoomLevel, sy = y1 * zoomLevel;
+                const sw = (x2 - x1) * zoomLevel, sh = (y2 - y1) * zoomLevel;
+
+                ctx.strokeStyle = roi.color;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(sx, sy, sw, sh);
+
+                ctx.fillStyle = roi.color;
+                const labelWidth = ctx.measureText(roi.label).width + 10;
+                ctx.fillRect(sx, sy - 18, labelWidth, 16);
+
+                ctx.fillStyle = '#000';
+                ctx.font = '12px Arial';
+                ctx.fillText(roi.label, sx + 5, sy - 5);
+
+                ctx.fillStyle = '#fff';
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1;
+                const hs = 8;
+                [[sx, sy], [sx+sw, sy], [sx, sy+sh], [sx+sw, sy+sh]].forEach(([hx, hy]) => {
+                    ctx.fillRect(hx-hs/2, hy-hs/2, hs, hs);
+                    ctx.strokeRect(hx-hs/2, hy-hs/2, hs, hs);
+                });
+            }
+        }
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {x: (e.clientX - rect.left) / zoomLevel, y: (e.clientY - rect.top) / zoomLevel};
+        }
+
+        function hitTest(mx, my) {
+            const hs = 8 / zoomLevel;
+            for (const [name, roi] of Object.entries(rois)) {
+                const [y1, y2, x1, x2] = roi.coords;
+                const corners = [{x:x1,y:y1,t:'nw'},{x:x2,y:y1,t:'ne'},{x:x1,y:y2,t:'sw'},{x:x2,y:y2,t:'se'}];
+                for (const c of corners) {
+                    if (Math.abs(mx-c.x)<hs && Math.abs(my-c.y)<hs)
+                        return {type:'resize', roi:name, corner:c.t};
+                }
+            }
+            for (const [name, roi] of Object.entries(rois)) {
+                const [y1, y2, x1, x2] = roi.coords;
+                if (mx>=x1 && mx<=x2 && my>=y1 && my<=y2) return {type:'drag', roi:name};
+            }
+            return null;
+        }
+
+        function handleMouseDown(e) {
+            const pos = getMousePos(e);
+            const hit = hitTest(pos.x, pos.y);
+            if (hit) {
+                if (hit.type === 'drag') {
+                    dragging = hit.roi;
+                    const [y1,,x1] = rois[hit.roi].coords;
+                    dragStart = {x: pos.x - x1, y: pos.y - y1};
+                } else if (hit.type === 'resize') {
+                    resizing = {roi: hit.roi, corner: hit.corner};
+                }
+                canvas.style.cursor = 'move';
+            }
+        }
+
+        function handleMouseMove(e) {
+            const pos = getMousePos(e);
+            if (dragging) {
+                const [y1, y2, x1, x2] = rois[dragging].coords;
+                const w = x2 - x1, h = y2 - y1;
+                let nx = Math.max(0, Math.min(Math.round(pos.x - dragStart.x), image.width - w));
+                let ny = Math.max(0, Math.min(Math.round(pos.y - dragStart.y), image.height - h));
+                rois[dragging].coords = [ny, ny+h, nx, nx+w];
+                drawCanvas();
+                updateInputs();
+            } else if (resizing) {
+                const roi = rois[resizing.roi];
+                let [y1, y2, x1, x2] = roi.coords;
+                const mx = Math.round(pos.x), my = Math.round(pos.y);
+                if (resizing.corner.includes('n')) y1 = Math.max(0, Math.min(my, y2-10));
+                if (resizing.corner.includes('s')) y2 = Math.max(y1+10, Math.min(my, image.height));
+                if (resizing.corner.includes('w')) x1 = Math.max(0, Math.min(mx, x2-10));
+                if (resizing.corner.includes('e')) x2 = Math.max(x1+10, Math.min(mx, image.width));
+                roi.coords = [y1, y2, x1, x2];
+                drawCanvas();
+                updateInputs();
+            } else {
+                const hit = hitTest(pos.x, pos.y);
+                canvas.style.cursor = hit ? 'move' : 'default';
+            }
+        }
+
+        function handleMouseUp() {
+            dragging = null;
+            resizing = null;
+            canvas.style.cursor = 'default';
+        }
+
+        function updateInputs() {
+            for (const [name, roi] of Object.entries(rois)) {
+                for (let i = 0; i < 4; i++) {
+                    document.getElementById(name + '_' + i).value = roi.coords[i];
+                }
+            }
+        }
+
+        function loadConfig() {
+            fetch('/config').then(r => r.json()).then(config => {
+                for (const [name, coords] of Object.entries(config)) {
+                    if (rois[name]) rois[name].coords = coords;
+                }
+                updateInputs();
+                if (image) drawCanvas();
+            });
+        }
+
+        function saveConfig() {
+            const config = {};
+            for (const [name, roi] of Object.entries(rois)) config[name] = roi.coords;
+            fetch('/config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            }).then(r => r.json()).then(d => {
+                showStatus(d.success ? 'Saved to roi_config.json' : 'Save failed', d.success ? 'success' : 'danger');
+            });
+        }
+
+        function exportConfig() {
+            fetch('/export').then(r => r.json()).then(d => {
+                document.getElementById('export-python').value = d.python;
+                document.getElementById('export-json').value = d.json;
+                new bootstrap.Modal(document.getElementById('exportModal')).show();
+            });
+        }
+
+        function showStatus(msg, type) {
+            const s = document.getElementById('status');
+            s.textContent = msg;
+            s.className = 'alert alert-' + type;
+            s.style.display = 'block';
+            if (type === 'success') setTimeout(() => s.style.display = 'none', 3000);
+        }
+    </script>
+</body>
+</html>
