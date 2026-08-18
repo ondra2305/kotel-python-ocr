@@ -23,7 +23,10 @@ import numpy as np
 import requests
 import paho.mqtt.client as mqtt
 
-from . import boiler_vision
+# Work both as a module (python -m boiler_ocr.mqtt_oneshot) and as a plain
+# script (python boiler_ocr/mqtt_oneshot.py).
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from boiler_ocr import boiler_vision
 
 # ============= CONFIGURATION =============
 MQTT_BROKER = "192.168.0.13"

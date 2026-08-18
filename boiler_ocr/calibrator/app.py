@@ -10,14 +10,20 @@ detected screen corners, so a calibration done once holds at any camera angle.
 """
 
 import json
+import os
+import sys
 
 import cv2
 import numpy as np
 import requests
 from flask import Flask, render_template, request, jsonify, Response
 
-from .. import boiler_vision as bv
-from ..screen_detection import (
+# Work both as a module (python -m boiler_ocr.calibrator.app) and as a plain
+# script (python boiler_ocr/calibrator/app.py) by ensuring the repo root is
+# importable, then using absolute imports.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from boiler_ocr import boiler_vision as bv               # noqa: E402
+from boiler_ocr.screen_detection import (                # noqa: E402
     detect_screen, warp_to_canonical, screen_matrix, canonical_roi_to_image,
     _map_points, CANONICAL_W, CANONICAL_H)
 

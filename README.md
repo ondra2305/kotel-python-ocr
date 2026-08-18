@@ -54,11 +54,19 @@ screen not found) the measurement sensors go **Unavailable** and a diagnostic
 
 ## Deploy
 
-Copy the repo to the Pi, create the venv (`uv sync`), install `ssocr`, then
-adjust the paths/user in `systemd/*.service` and enable the timer:
+Copy the repo to the Pi and run the installer. It creates the venv, installs
+`ssocr`, renders the systemd units with this repo's path and the chosen user,
+removes any previous install of these units, and enables the timer:
 
 ```bash
-sudo cp systemd/*.service systemd/*.timer /etc/systemd/system/
-sudo systemctl enable --now boilerocr-mqtt-oneshot.timer
-sudo systemctl enable --now roi-calibrator.service   # optional, for calibration
+sudo scripts/install.sh                       # user = repo owner
+sudo scripts/install.sh --user pi             # run services as 'pi'
+sudo scripts/install.sh --with-calibrator     # also enable the calibrator web UI
 ```
+
+Check it: `systemctl status boilerocr-mqtt-oneshot.timer` and
+`journalctl -u boilerocr-mqtt-oneshot.service -f`.
+
+The `systemd/*.service` / `*.timer` files are templates (defaults point at
+`/home/admin/boilerocr` and `User=admin`); the installer substitutes the real
+path and user, or you can copy and edit them by hand.
