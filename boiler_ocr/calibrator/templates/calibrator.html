@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ROI Calibrator (canonical)</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding: 20px; }
+        .roi-input-group { margin-bottom: 8px; padding: 8px; border-left: 4px solid; }
+        #canvas-wrapper { overflow: auto; max-width: 100%; max-height: 75vh; border: 1px solid #ddd; background: #222; }
+        #image-canvas { display: block; }
+        .zoom-controls { display: inline-flex; align-items: center; gap: 8px; }
+        .zoom-level { min-width: 54px; text-align: center; font-weight: bold; }
+        .detection-result { padding: 8px; margin-bottom: 6px; border-radius: 4px; border-left: 4px solid; }
+        .detection-result.on { background: #d4edda; border-left-color: #28a745; }
+        .detection-result.off { background: #f8d7da; border-left-color: #dc3545; }
+        .detection-result.info { background: #e2e3e5; border-left-color: #6c757d; }
+        .frac { width: 78px; }
+        .coord { width: 100%; }
+    </style>
+</head>
+<body>
+<div class="container-fluid">
+    <h3>ROI Calibrator <small class="text-muted">— draw on the full image; boxes are stored screen-relative</small></h3>
+    <hr>
+    <div class="row">
+        <div class="col-lg-7">
+            <div class="mb-2">
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">Upload File</button>
+                    <button class="btn btn-success" onclick="loadFromCamera()">Load from Camera</button>
+                </div>
+                <span class="zoom-controls ms-3">
+                    <button class="btn btn-sm btn-secondary" onclick="zoom(-0.25)">−</button>
+                    <span class="zoom-level" id="zoom-level">100%</span>
+                    <button class="btn btn-sm btn-secondary" onclick="zoom(0.25)">+</button>
+                </span>
+            </div>
+            <input type="file" id="file-input" accept="image/*" style="display:none" onchange="handleFile(event)">
+            <div id="status" class="alert" style="display:none"></div>
+            <div id="canvas-wrapper"><canvas id="image-canvas"></canvas></div>
+            <div class="mt-3">
+                <button class="btn btn-success btn-lg" onclick="saveConfig()">Save Configuration</button>
+                <button class="btn btn-outline-primary" onclick="runDetection()">Run Detection</button>
+                <button class="btn btn-outline-secondary" onclick="openExport()">Export</button>
+                <button class="btn btn-outline-secondary" onclick="openImport()">Import</button>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <ul class="nav nav-tabs">
+                <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#coordinates">ROIs</a></li>
+                <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#detection">Detection</a></li>
+                <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#params">Parameters</a></li>
+            </ul>
+            <div class="tab-content mt-3">
+                <div id="coordinates" class="tab-pane fade show active">
+                    <small class="text-muted">Image pixels (y1, y2, x1, x2). Drag boxes on the image to edit.</small>
+                    <div id="roi-list" class="mt-2"></div>
+                </div>
+                <div id="detection" class="tab-pane fade">
+                    <button class="btn btn-primary mb-3" onclick="runDetection()">Run Detection</button>
+                    <p class="text-muted" id="detection-hint">Runs the real pipeline on the current image and shows what each ROI reads.</p>
+                    <div id="detection-results"></div>
+                </div>
+                <div id="params" class="tab-pane fade">
+                    <div class="mb-2"><label class="form-label">Icon "on" ratio</label>
+                        <input type="number" step="0.01" class="form-control frac" id="p_icon_on_ratio"></div>
+                    <div class="row">
+                        <div class="col"><label class="form-label">Temp min</label>
+                            <input type="number" class="form-control frac" id="p_temp_min"></div>
+                        <div class="col"><label class="form-label">Temp max</label>
+                            <input type="number" class="form-control frac" id="p_temp_max"></div>
+                    </div>
+                    <hr>
+                    <details><summary class="text-muted">Advanced (icon-mask tuning)</summary>
+                        <div class="mt-2 row">
+                            <div class="col"><label class="form-label">adapt_block</label>
+                                <input type="number" class="form-control frac" id="p_adapt_block"></div>
+                            <div class="col"><label class="form-label">adapt_c</label>
+                                <input type="number" class="form-control frac" id="p_adapt_c"></div>
+                            <div class="col"><label class="form-label">min_component</label>
+                                <input type="number" class="form-control frac" id="p_min_component"></div>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Export / Import modal -->
+<div class="modal fade" id="ioModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title" id="ioTitle">Configuration</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+        <div id="ioExportView">
+            <h6>JSON</h6><textarea id="export-json" class="form-control" rows="10" readonly></textarea>
+            <h6 class="mt-3">Python</h6><textarea id="export-python" class="form-control" rows="6" readonly></textarea>
+        </div>
+        <div id="ioImportView" style="display:none">
+            <h6>Paste canonical config JSON (fractions), then Apply</h6>
+            <textarea id="import-json" class="form-control" rows="12" placeholder='{ "rois": { ... }, "params": { ... } }'></textarea>
+            <button class="btn btn-primary mt-2" onclick="applyImport()">Apply &amp; Save</button>
+        </div>
+    </div>
+</div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const ROI_DEFS = {
+    temperature:    {color: '#ff00ff', label: 'Temp'},
+    flame_icon:     {color: '#00ff00', label: 'Flame'},
+    bar_graph:      {color: '#3399ff', label: 'Level'},
+    heating_icon:   {color: '#ffa500', label: 'Heat'},
+    hot_water_icon: {color: '#ffff00', label: 'Water'},
+    winter_icon:    {color: '#00c0ff', label: 'Winter'},
+    summer_icon:    {color: '#ff6000', label: 'Summer'},
+};
+const PARAM_IDS = ['icon_on_ratio','temp_min','temp_max','adapt_block','adapt_c','min_component'];
+
+let canvas, ctx, image = null, zoomLevel = 1.0;
+let imgW = 0, imgH = 0, corners = null;   // full-image size + detected screen quad
+let rois = {};                            // name -> {coords:[y1,y2,x1,x2] image px}
+let dragging = null, resizing = null, dragStart = {x:0,y:0};
+
+window.addEventListener('load', () => {
+    canvas = document.getElementById('image-canvas');
+    ctx = canvas.getContext('2d');
+    buildRoiList();
+    loadParams();
+    canvas.addEventListener('mousedown', onDown);
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseup', onUp);
+    canvas.addEventListener('mouseleave', onUp);
+});
+
+function buildRoiList() {
+    const box = document.getElementById('roi-list');
+    box.innerHTML = '';
+    for (const [name, def] of Object.entries(ROI_DEFS)) {
+        const g = document.createElement('div');
+        g.className = 'roi-input-group'; g.style.borderLeftColor = def.color;
+        let inputs = '';
+        for (let i = 0; i < 4; i++)
+            inputs += `<div class="col-3"><input type="number" class="form-control form-control-sm coord" id="c_${name}_${i}" readonly></div>`;
+        g.innerHTML = `<strong>${def.label}</strong><div class="row g-1 mt-1">${inputs}</div>`;
+        box.appendChild(g);
+    }
+}
+
+function loadParams() {
+    fetch('/config').then(r => r.json()).then(cfg => {
+        const p = cfg.params || {};
+        PARAM_IDS.forEach(k => { if (p[k] !== undefined) document.getElementById('p_'+k).value = p[k]; });
+    });
+}
+function collectParams() {
+    const p = {};
+    PARAM_IDS.forEach(k => {
+        const v = document.getElementById('p_'+k).value;
+        if (v !== '') p[k] = (k === 'icon_on_ratio') ? parseFloat(v) : parseInt(v);
+    });
+    return p;
+}
+
+// ---- image loading ----
+function handleFile(ev) {
+    const file = ev.target.files[0]; if (!file) return;
+    const fd = new FormData(); fd.append('image', file);
+    showStatus('Uploading...', 'info');
+    fetch('/upload', {method:'POST', body:fd}).then(r=>r.json()).then(onLoaded);
+}
+function loadFromCamera() {
+    showStatus('Loading from camera...', 'info');
+    fetch('/load_camera', {method:'POST'}).then(r=>r.json()).then(onLoaded);
+}
+function onLoaded(d) {
+    if (d.error) { showStatus('Error: '+d.error, 'danger'); return; }
+    imgW = d.width; imgH = d.height; corners = d.corners;
+    if (d.status !== 'ok')
+        showStatus('Screen NOT detected ('+d.status+') — reposition the camera. ROIs cannot be placed.', 'warning');
+    else
+        showStatus('Screen detected. ROIs projected onto the image.', 'success');
+    image = new Image();
+    image.onload = () => {
+        const maxW = document.getElementById('canvas-wrapper').clientWidth || 700;
+        zoomLevel = Math.min(1.0, maxW / image.width);
+        applyZoom();
+        if (d.status === 'ok') projectConfig();
+    };
+    image.src = '/full_image?' + Date.now();
+}
+
+// project the saved fractions onto this image to get pixel boxes to edit
+function projectConfig() {
+    fetch('/config').then(r => r.json()).then(cfg => {
+        fetch('/project', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({rois: cfg.rois})})
+        .then(r => r.json()).then(d => {
+            if (d.error) { showStatus(d.error, 'danger'); return; }
+            rois = {};
+            for (const name in ROI_DEFS) rois[name] = {coords: d.rois[name]};
+            updateInputs(); draw();
+        });
+    });
+}
+
+function zoom(delta) { zoomLevel = Math.max(0.1, Math.min(4.0, zoomLevel + delta)); applyZoom(); }
+function applyZoom() {
+    if (!image) return;
+    canvas.width = image.width * zoomLevel;
+    canvas.height = image.height * zoomLevel;
+    document.getElementById('zoom-level').textContent = Math.round(zoomLevel*100)+'%';
+    draw();
+}
+
+function draw() {
+    if (!image) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    // detected screen outline (reference)
+    if (corners) {
+        ctx.strokeStyle = 'rgba(255,0,0,0.9)'; ctx.lineWidth = 2; ctx.beginPath();
+        corners.forEach(([x,y], i) => { const sx=x*zoomLevel, sy=y*zoomLevel;
+            i ? ctx.lineTo(sx,sy) : ctx.moveTo(sx,sy); });
+        ctx.closePath(); ctx.stroke();
+    }
+    for (const [name, roi] of Object.entries(rois)) {
+        const def = ROI_DEFS[name], [y1,y2,x1,x2] = roi.coords;
+        const sx=x1*zoomLevel, sy=y1*zoomLevel, sw=(x2-x1)*zoomLevel, sh=(y2-y1)*zoomLevel;
+        ctx.strokeStyle=def.color; ctx.lineWidth=2; ctx.strokeRect(sx,sy,sw,sh);
+        ctx.fillStyle=def.color; ctx.fillRect(sx, sy-15, ctx.measureText(def.label).width+8, 14);
+        ctx.fillStyle='#000'; ctx.font='12px Arial'; ctx.fillText(def.label, sx+4, sy-4);
+        ctx.fillStyle='#fff'; ctx.strokeStyle='#000'; ctx.lineWidth=1; const hs=8;
+        [[sx,sy],[sx+sw,sy],[sx,sy+sh],[sx+sw,sy+sh]].forEach(([hx,hy]) => {
+            ctx.fillRect(hx-hs/2,hy-hs/2,hs,hs); ctx.strokeRect(hx-hs/2,hy-hs/2,hs,hs);
+        });
+    }
+}
+
+function mousePos(e) { const r=canvas.getBoundingClientRect(); return {x:(e.clientX-r.left)/zoomLevel, y:(e.clientY-r.top)/zoomLevel}; }
+function hitTest(mx,my) {
+    const hs=8/zoomLevel;
+    for (const [name,roi] of Object.entries(rois)) {
+        const [y1,y2,x1,x2]=roi.coords;
+        const cs=[{x:x1,y:y1,t:'nw'},{x:x2,y:y1,t:'ne'},{x:x1,y:y2,t:'sw'},{x:x2,y:y2,t:'se'}];
+        for (const c of cs) if (Math.abs(mx-c.x)<hs && Math.abs(my-c.y)<hs) return {type:'resize', roi:name, corner:c.t};
+    }
+    for (const [name,roi] of Object.entries(rois)) {
+        const [y1,y2,x1,x2]=roi.coords;
+        if (mx>=x1&&mx<=x2&&my>=y1&&my<=y2) return {type:'drag', roi:name};
+    }
+    return null;
+}
+function onDown(e) {
+    const p=mousePos(e), hit=hitTest(p.x,p.y); if (!hit) return;
+    if (hit.type==='drag') { dragging=hit.roi; const [y1,,x1]=rois[hit.roi].coords; dragStart={x:p.x-x1, y:p.y-y1}; }
+    else resizing={roi:hit.roi, corner:hit.corner};
+    canvas.style.cursor='move';
+}
+function onMove(e) {
+    const p=mousePos(e);
+    if (dragging) {
+        const [y1,y2,x1,x2]=rois[dragging].coords, w=x2-x1, h=y2-y1;
+        let nx=Math.max(0, Math.min(Math.round(p.x-dragStart.x), imgW-w));
+        let ny=Math.max(0, Math.min(Math.round(p.y-dragStart.y), imgH-h));
+        rois[dragging].coords=[ny,ny+h,nx,nx+w]; draw(); updateInputs();
+    } else if (resizing) {
+        let [y1,y2,x1,x2]=rois[resizing.roi].coords; const mx=Math.round(p.x), my=Math.round(p.y);
+        if (resizing.corner.includes('n')) y1=Math.max(0, Math.min(my, y2-6));
+        if (resizing.corner.includes('s')) y2=Math.max(y1+6, Math.min(my, imgH));
+        if (resizing.corner.includes('w')) x1=Math.max(0, Math.min(mx, x2-6));
+        if (resizing.corner.includes('e')) x2=Math.max(x1+6, Math.min(mx, imgW));
+        rois[resizing.roi].coords=[y1,y2,x1,x2]; draw(); updateInputs();
+    } else {
+        canvas.style.cursor = hitTest(p.x,p.y) ? 'move' : 'default';
+    }
+}
+function onUp() { dragging=null; resizing=null; canvas.style.cursor='default'; }
+
+function updateInputs() {
+    for (const name in rois) for (let i=0;i<4;i++) {
+        const el=document.getElementById('c_'+name+'_'+i); if (el) el.value=rois[name].coords[i];
+    }
+}
+
+// ---- actions ----
+function pxRois() { const o={}; for (const n in rois) o[n]=rois[n].coords; return o; }
+
+function saveConfig() {
+    if (!image || !corners) { showStatus('Load an image with a detected screen first', 'warning'); return; }
+    fetch('/save', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({rois: pxRois(), params: collectParams()})})
+        .then(r => r.json()).then(d => showStatus(d.success ? 'Saved to '+d.path : (d.error||'Save failed'), d.success?'success':'danger'));
+}
+
+function runDetection() {
+    if (!image || !corners) { showStatus('Load an image with a detected screen first', 'warning'); return; }
+    showStatus('Running detection...', 'info');
+    fetch('/detect', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({rois: pxRois(), params: collectParams()})})
+        .then(r => r.json()).then(res => {
+            if (res.error) { showStatus(res.error, 'danger'); return; }
+            renderDetection(res); showStatus('Detection complete', 'success');
+            new bootstrap.Tab(document.querySelector('a[href="#detection"]')).show();
+        })
+        .catch(err => showStatus('Detection failed: ' + err, 'danger'));
+}
+
+function line(cls, label, value, extra) {
+    return `<div class="detection-result ${cls}"><strong>${label}:</strong> ${value}`
+         + (extra ? `<br><small>${extra}</small>` : '') + `</div>`;
+}
+function renderDetection(r) {
+    const hint = document.getElementById('detection-hint'); if (hint) hint.style.display = 'none';
+    const R = r._ratios || {}; let h = '';
+    h += line(r.temperature!=null?'on':'off', 'Temperature', r.temperature!=null ? r.temperature+' °C' : 'Failed / n/a');
+    h += line('info', 'Mode', r.mode);
+    h += line(r.flame_active?'on':'off', 'Flame', r.flame_active?'ON':'OFF', 'ratio '+(R.flame_icon??'-'));
+    h += line('info', 'Flame level', (r.flame_level??'?')+' / 6');
+    h += line(r.heating_active?'on':'off', 'Heating', r.heating_active?'ON':'OFF', 'ratio '+(R.heating_icon??'-'));
+    h += line(r.hot_water_active?'on':'off', 'Hot water', r.hot_water_active?'ON':'OFF', 'ratio '+(R.hot_water_icon??'-'));
+    h += line('info', 'Winter icon', 'ratio '+(R.winter_icon??'-'));
+    h += line('info', 'Summer icon', 'ratio '+(R.summer_icon??'-'));
+    if (r.error) h += line('off', 'Validation', r.error);
+    document.getElementById('detection-results').innerHTML = h;
+}
+
+// ---- export / import ----
+function openExport() {
+    document.getElementById('ioTitle').textContent = 'Export Configuration';
+    document.getElementById('ioExportView').style.display = '';
+    document.getElementById('ioImportView').style.display = 'none';
+    fetch('/export').then(r => r.json()).then(d => {
+        document.getElementById('export-json').value = d.json;
+        document.getElementById('export-python').value = d.python;
+        new bootstrap.Modal(document.getElementById('ioModal')).show();
+    });
+}
+function openImport() {
+    document.getElementById('ioTitle').textContent = 'Import Configuration';
+    document.getElementById('ioExportView').style.display = 'none';
+    document.getElementById('ioImportView').style.display = '';
+    document.getElementById('import-json').value = '';
+    new bootstrap.Modal(document.getElementById('ioModal')).show();
+}
+function applyImport() {
+    let cfg;
+    try { cfg = JSON.parse(document.getElementById('import-json').value); }
+    catch (e) { showStatus('Invalid JSON: '+e, 'danger'); return; }
+    fetch('/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg)})
+        .then(r => r.json()).then(d => {
+            bootstrap.Modal.getInstance(document.getElementById('ioModal')).hide();
+            showStatus(d.success ? 'Imported and saved' : 'Import failed', d.success?'success':'danger');
+            loadParams();
+            if (image && corners) projectConfig();
+        });
+}
+
+function showStatus(msg, type) {
+    const s = document.getElementById('status');
+    s.textContent = msg; s.className = 'alert alert-'+type; s.style.display='block';
+    if (type === 'success') setTimeout(() => s.style.display='none', 3000);
+}
+</script>
+</body>
+</html>

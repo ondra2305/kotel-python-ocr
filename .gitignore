@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.uv/
+
+# IDE
+.idea/
+.vscode/
+
+# Runtime config written by the calibrator (defaults live in boiler_vision.py)
+boiler_ocr/canonical_roi_config.json
+
+# Debug output
+debug/screen_debug/
+screen_debug/
+
+# OS
+.DS_Store

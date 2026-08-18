@@ -1,0 +1,18 @@
+[Unit]
+Description=Boiler ROI Calibrator Web Interface
+After=network.target
+
+[Service]
+Type=simple
+# Adjust User and the deploy path (repo root on the Pi) to match your setup.
+# Should point at the same deployed repo as boilerocr-mqtt-oneshot.service.
+User=admin
+WorkingDirectory=/home/admin/boilerocr
+ExecStart=/home/admin/boilerocr/.venv/bin/python -m boiler_ocr.calibrator.app
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

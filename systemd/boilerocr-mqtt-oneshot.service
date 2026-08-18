@@ -5,9 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Adjust User and the deploy path (repo root on the Pi) to match your setup.
 User=admin
 WorkingDirectory=/home/admin/boilerocr
-ExecStart=/home/admin/boilerocr/.venv/bin/python /home/admin/boilerocr/boiler-mqtt-oneshot.py
+ExecStart=/home/admin/boilerocr/.venv/bin/python -m boiler_ocr.mqtt_oneshot
 StandardOutput=journal
 StandardError=journal
 

@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""
+Boiler-display vision.
+
+Locates the LCD screen in a photo, flattens it to a fixed canonical image, and
+reads every feature from ROIs defined RELATIVE to the screen. Because the ROIs
+follow the screen's own four corners, the readings survive the camera being
+bumped or moved to a new angle - no manual re-calibration.
+
+Public API:
+    analyze(bgr_image) -> dict
+        status:            'ok' | 'no_image' | 'too_dark' | 'no_screen'
+        temperature:       int or None
+        flame_active:      bool or None
+        flame_level:       int (0..6) or None
+        heating_active:    bool or None
+        hot_water_active:  bool or None
+        mode:              'winter' | 'summer' | 'unknown' | None
+        error:             str or None (validation notes)
+    'status' == 'ok' means a screen was found and read; any other value means
+    the display could not be read and the measurements are None.
+
+Robustness notes (learned from real photos):
+  * Backlight ranges from bright orange to dim green, so icon detection is done
+    with a LOCAL adaptive threshold (relative to nearby glass), never a fixed
+    gray level.
+  * The bezel can cast a dark shadow that bleeds over the glass edge depending
+    on angle. That shadow always touches the screen border, while real icons
+    float in the interior, so we drop any dark region connected to the border.
+  * The flame bar-graph is made of solid filled blocks (not thin strokes), so it
+    uses its own relative threshold.
+"""
+
+import cv2
+import numpy as np
+import os
+import json
+import shutil
+import subprocess
+import tempfile
+
+from .screen_detection import detect_screen, warp_to_canonical, CANONICAL_W, CANONICAL_H
+
+# ---------------------------------------------------------------------------
+# Configuration (ROIs relative to the screen; fractions of width/height)
+# ---------------------------------------------------------------------------
+
+# [y1, y2, x1, x2] as fractions 0..1 of the canonical screen.
+DEFAULT_ROIS = {
+    "temperature":    [0.014, 0.292, 0.098, 0.631],
+    "flame_icon":     [0.531, 0.952, 0.080, 0.191],
+    "bar_graph":      [0.530, 0.952, 0.186, 0.335],
+    "heating_icon":   [0.564, 0.720, 0.634, 0.932],
+    "hot_water_icon": [0.563, 0.721, 0.408, 0.636],
+    "winter_icon":    [0.340, 0.550, 0.710, 0.950],
+    "summer_icon":    [0.350, 0.540, 0.420, 0.710],
+}
+
+DEFAULT_PARAMS = {
+    "icon_on_ratio": 0.08,       # min dark-stroke coverage to call an icon "on"
+    "temp_min": 30,
+    "temp_max": 90,
+    "bar_segments": 6,
+    "bar_fill_threshold": 0.30,
+    "min_frame_brightness": 15,  # whole-frame mean below this = lens covered
+    "adapt_block": 15,           # local-threshold neighborhood (odd)
+    "adapt_c": 10,               # how much darker than local mean counts as ink
+    "min_component": 25,         # drop dark blobs smaller than this (grain)
+}
+
+# Optional external override, written next to this file.
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "canonical_roi_config.json")
+
+
+def load_config():
+    """Return (rois, params), applying canonical_roi_config.json if present."""
+    rois = {k: list(v) for k, v in DEFAULT_ROIS.items()}
+    params = dict(DEFAULT_PARAMS)
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE) as f:
+                cfg = json.load(f)
+            rois.update(cfg.get("rois", {}))
+            params.update(cfg.get("params", {}))
+        except Exception as e:  # keep running on a broken config
+            print(f"WARN: could not read {CONFIG_FILE}: {e}")
+    return rois, params
+
+
+HAVE_SSOCR = shutil.which("ssocr") is not None
+
+
+# ---------------------------------------------------------------------------
+# Low-level detectors (operate on the flattened canonical screen)
+# ---------------------------------------------------------------------------
+
+def _roi_slice(image, roi_frac):
+    y1, y2, x1, x2 = roi_frac
+    return image[int(y1 * CANONICAL_H):int(y2 * CANONICAL_H),
+                 int(x1 * CANONICAL_W):int(x2 * CANONICAL_W)]
+
+
+def _local_dark_mask(gray, params):
+    """Pixels clearly darker than their small local neighborhood (icon ink)."""
+    g = cv2.GaussianBlur(gray, (5, 5), 0)
+    h, w = g.shape
+    bs = min(params["adapt_block"], (min(h, w) - 1) | 1)
+    if bs < 3:
+        return np.zeros_like(g)
+    mask = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                 cv2.THRESH_BINARY_INV, bs, params["adapt_c"])
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    clean = np.zeros_like(mask)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= params["min_component"]:
+            clean[labels == i] = 255
+    return clean
+
+
+def _edge_shadow_mask(gray):
+    """Dark region connected to the screen border (bezel shadow) - to ignore."""
+    otsu, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    darkish = (gray < 0.62 * otsu).astype(np.uint8)
+    n, labels = cv2.connectedComponents(darkish, 8)
+    border = set(labels[0, :]) | set(labels[-1, :]) | \
+             set(labels[:, 0]) | set(labels[:, -1])
+    border.discard(0)
+    ring = np.isin(labels, list(border)).astype(np.uint8) * 255
+    k = max(5, (min(gray.shape) // 60) | 1)
+    return cv2.dilate(ring, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
+
+def build_icon_mask(gray, params):
+    """Whole-screen mask of real icon ink, with the edge shadow removed."""
+    strokes = _local_dark_mask(gray, params)
+    strokes[_edge_shadow_mask(gray) > 0] = 0
+    return strokes
+
+
+def _icon_ratio(icon_mask, roi_frac):
+    sub = _roi_slice(icon_mask, roi_frac)
+    return float(sub.mean() / 255) if sub.size else 0.0
+
+
+def detect_flame_level(gray, roi_frac, params):
+    """Count filled bar-graph segments from the bottom up (relative threshold)."""
+    seg = _roi_slice(gray, roi_frac)
+    if seg.size == 0:
+        return None
+    bg = np.percentile(seg, 80)                     # bright glass reference
+    filled = (seg < bg - 40).astype(np.uint8)
+    h = seg.shape[0]
+    seg_h = h // params["bar_segments"]
+    if seg_h == 0:
+        return None
+    active = 0
+    for i in range(params["bar_segments"]):
+        band = filled[h - (i + 1) * seg_h: h - i * seg_h, :]
+        if band.size == 0:
+            break
+        if np.sum(band > 0) / band.size > params["bar_fill_threshold"]:
+            active = i + 1
+        else:
+            break
+    return active
+
+
+def read_temperature(warped, roi_frac, params):
+    """OCR the 2-digit temperature with ssocr; None if unreadable/unavailable."""
+    if not HAVE_SSOCR:
+        return None
+    crop = _roi_slice(warped, roi_frac)
+    if crop.size == 0:
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    votes = []
+    for thr in (80, 100, 60, 90, 110):
+        _, proc = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            cv2.imwrite(tmp.name, proc)
+            try:
+                out = subprocess.run(
+                    ["ssocr", "--number-digits=2", "-d", "2", tmp.name],
+                    capture_output=True, text=True, timeout=5)
+                s = out.stdout.strip()
+                if out.returncode == 0 and s.isdigit() and len(s) == 2 \
+                        and params["temp_min"] <= int(s) <= params["temp_max"]:
+                    votes.append(int(s))
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+    if not votes:
+        return None
+    winner = max(set(votes), key=votes.count)
+    # require agreement (>=2 thresholds) unless only one produced anything
+    if votes.count(winner) >= 2 or len(votes) == 1:
+        return winner
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Top-level analysis with health checks
+# ---------------------------------------------------------------------------
+
+def _blank_result(status, error=None):
+    return {
+        "status": status,
+        "temperature": None,
+        "flame_active": None,
+        "flame_level": None,
+        "heating_active": None,
+        "hot_water_active": None,
+        "mode": None,
+        "error": error,
+    }
+
+
+def read_canonical(warped, rois=None, params=None, debug=False):
+    """
+    Read every feature from an already-flattened canonical screen using the
+    given ROIs (fractions). Returns the measurements dict WITHOUT a 'status'
+    field (the caller decides that). Used by analyze() and by the calibrator's
+    live preview.
+    """
+    if rois is None or params is None:
+        cfg_rois, cfg_params = load_config()
+        rois = rois or cfg_rois
+        params = params or cfg_params
+
+    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    icon_mask = build_icon_mask(gray, params)
+    on = params["icon_on_ratio"]
+    ratios = {name: _icon_ratio(icon_mask, rois[name])
+              for name in ("flame_icon", "heating_icon", "hot_water_icon",
+                           "winter_icon", "summer_icon")}
+    winter = ratios["winter_icon"] > on
+    summer = ratios["summer_icon"] > on
+
+    res = {
+        "temperature": read_temperature(warped, rois["temperature"], params),
+        "flame_active": ratios["flame_icon"] > on,
+        "flame_level": detect_flame_level(gray, rois["bar_graph"], params),
+        "heating_active": ratios["heating_icon"] > on,
+        "hot_water_active": ratios["hot_water_icon"] > on,
+        "mode": ("winter" if winter and not summer else
+                 "summer" if summer and not winter else "unknown"),
+        "error": None,
+    }
+    _validate(res)
+    if debug:
+        res["_ratios"] = {k: round(v, 3) for k, v in ratios.items()}
+    return res
+
+
+def analyze(image, debug=False):
+    """Read the whole display. See module docstring for the returned dict."""
+    rois, params = load_config()
+
+    if image is None:
+        return _blank_result("no_image")
+
+    gray_full = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if float(gray_full.mean()) < params["min_frame_brightness"]:
+        return _blank_result("too_dark")          # lens covered / no light
+
+    corners = detect_screen(image)
+    if corners is None:
+        return _blank_result("no_screen")          # obscured / moved / no glass
+
+    warped, _ = warp_to_canonical(image, corners)
+    res = read_canonical(warped, rois, params, debug=debug)
+    res["status"] = "ok"
+    return res
+
+
+def _validate(res):
+    """Cross-check for logically impossible combinations; note them in error."""
+    notes = []
+    if res["heating_active"] and res["hot_water_active"]:
+        # boiler drives heating OR hot water, not both at once
+        res["heating_active"] = None
+        res["hot_water_active"] = None
+        notes.append("heating+hot_water conflict")
+
+    lvl, flame = res["flame_level"], res["flame_active"]
+    if lvl is not None and flame is not None:
+        if lvl > 0 and not flame:
+            res["flame_active"] = True
+            notes.append("level>0 but flame icon off")
+        elif flame and lvl == 0:
+            res["flame_level"] = 1
+            notes.append("flame icon on but level 0")
+    if notes:
+        res["error"] = "; ".join(notes)
