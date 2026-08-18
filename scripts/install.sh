@@ -7,10 +7,10 @@
 #   - stops/disables any previous install of these units, then enables the timer
 #
 # Usage (run from anywhere, as root):
-#   sudo scripts/install.sh [--user NAME] [--with-calibrator]
+#   sudo scripts/install.sh [--user NAME] [--no-calibrator]
 #
-# --user NAME          run the services as NAME (default: owner of the repo dir)
-# --with-calibrator    also enable the ROI calibrator web service
+# --user NAME        run the services as NAME (default: owner of the repo dir)
+# --no-calibrator    don't enable the ROI calibrator web service
 #
 set -euo pipefail
 
@@ -21,11 +21,11 @@ fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICE_USER=""
-WITH_CAL=0
+WITH_CAL=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --user) SERVICE_USER="${2:-}"; shift 2 ;;
-        --with-calibrator) WITH_CAL=1; shift ;;
+        --no-calibrator) WITH_CAL=0; shift ;;
         -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -39,7 +39,12 @@ echo "==> Repo:  $REPO_DIR"
 echo "==> User:  $SERVICE_USER"
 
 # --- 1. Python venv + dependencies ------------------------------------------
-if [ ! -x "$VENV_PY" ]; then
+# Validate it actually runs here (a .venv copied from another machine has the
+# wrong-architecture python and fails with "Exec format error").
+if [ -x "$VENV_PY" ] && "$VENV_PY" -c 'import sys' >/dev/null 2>&1; then
+    echo "==> Virtualenv already present, skipping"
+else
+    [ -e "$REPO_DIR/.venv" ] && { echo "==> Removing unusable .venv"; rm -rf "$REPO_DIR/.venv"; }
     echo "==> Creating virtualenv"
     if command -v uv >/dev/null 2>&1; then
         sudo -u "$SERVICE_USER" sh -c "cd '$REPO_DIR' && uv sync"
@@ -52,8 +57,6 @@ if [ ! -x "$VENV_PY" ]; then
             "paho-mqtt>=2.1.0,<3" "requests>=2.33.1,<3"
         chown -R "$SERVICE_USER":"$SERVICE_USER" "$REPO_DIR/.venv"
     fi
-else
-    echo "==> Virtualenv already present, skipping"
 fi
 
 # --- 2. ssocr (temperature OCR) ---------------------------------------------

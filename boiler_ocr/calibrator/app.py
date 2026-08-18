@@ -184,7 +184,8 @@ def detect():
     rois.update(_boxes_to_fracs(data.get("rois", {})))  # preview edited boxes
     params.update(data.get("params", {}))
     warped, _ = warp_to_canonical(STATE["raw"], STATE["corners"])
-    return jsonify(bv.read_canonical(warped, rois, params, debug=True))
+    return jsonify(bv.read_canonical(warped, rois, params, debug=True,
+                                     full_image=STATE["raw"], corners=STATE["corners"]))
 
 
 @app.route("/export")

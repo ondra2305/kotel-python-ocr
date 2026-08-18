@@ -146,11 +146,13 @@ CORNER_LABELS = ["TL", "TR", "BR", "BL"]
 
 def _draw_screen_box(image, corners):
     pts = corners.astype(int)
-    cv2.polylines(image, [pts], True, (0, 0, 255), 2)
+    s = max(image.shape[:2]) / 1100.0  # scale text/lines with image size
+    cv2.polylines(image, [pts], True, (0, 0, 255), max(2, int(1.5 * s)))
     for i, pt in enumerate(pts):
-        cv2.circle(image, tuple(pt), 6, (0, 0, 255), -1)
+        cv2.circle(image, tuple(pt), max(4, int(4 * s)), (0, 0, 255), -1)
         cv2.putText(image, CORNER_LABELS[i], (pt[0] + 6, pt[1] - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, max(0.7, 0.7 * s), (0, 0, 255),
+                    max(2, int(1.4 * s)))
 
 
 def _grid(warped, step=40):

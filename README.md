@@ -5,6 +5,22 @@ Assistant over MQTT. It locates the screen automatically on every frame and
 reads ROIs relative to it, so a bumped or repositioned camera keeps working
 without re-calibration.
 
+## How it works
+
+1. Detect the LCD and its four corners on the raw photo:
+
+   ![screen detection](docs/1-detect.jpg)
+
+2. Flatten it to a fixed canonical image and read each region — temperature via
+   ssocr, the icons / bar-graph / mode by dark-ink coverage:
+
+   ![readout](docs/2-readout.jpg)
+
+3. Because the ROIs are screen-relative, it still lines up when the camera is
+   moved to a new angle (here the display is also in summer mode):
+
+   ![moved camera](docs/3-moved.jpg)
+
 ## Layout
 
 ```
@@ -61,12 +77,13 @@ screen not found) the measurement sensors go **Unavailable** and a diagnostic
 
 Copy the repo to the Pi and run the installer. It creates the venv, installs
 `ssocr`, renders the systemd units with this repo's path and the chosen user,
-removes any previous install of these units, and enables the timer:
+removes any previous install of these units, and enables the timer and
+calibrator:
 
 ```bash
 sudo scripts/install.sh                       # user = repo owner
 sudo scripts/install.sh --user pi             # run services as 'pi'
-sudo scripts/install.sh --with-calibrator     # also enable the calibrator web UI
+sudo scripts/install.sh --no-calibrator       # skip the calibrator web UI
 ```
 
 Check it: `systemctl status boilerocr-mqtt-oneshot.timer` and

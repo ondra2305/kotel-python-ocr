@@ -36,6 +36,7 @@ DEFAULT_PARAMS = {
     "icon_on_ratio": 0.08,       # min dark-stroke coverage to call an icon "on"
     "temp_min": 30,
     "temp_max": 90,
+    "temp_ink_min": 0.02,        # min ink coverage in the temp ROI to call digits present
     "bar_segments": 6,
     "bar_fill_threshold": 0.30,
     "min_frame_brightness": 15,  # whole-frame mean below this = lens covered
@@ -145,16 +146,43 @@ def detect_flame_level(gray, roi_frac, params):
     return active
 
 
-def read_temperature(warped, roi_frac, params):
-    """OCR the 2-digit temperature with ssocr; None if unreadable/unavailable."""
-    if not HAVE_SSOCR:
+def _warp_roi_fullres(image, corners, roi_frac):
+    """Deskew a screen-relative ROI straight from the full-res image, keeping
+    the digit resolution the small canonical warp would throw away."""
+    y1, y2, x1, x2 = roi_frac
+    canon = np.float32([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]) * \
+        np.float32([CANONICAL_W, CANONICAL_H])
+    dst_full = np.float32([[0, 0], [CANONICAL_W, 0],
+                           [CANONICAL_W, CANONICAL_H], [0, CANONICAL_H]])
+    m_inv = cv2.getPerspectiveTransform(dst_full, corners.astype(np.float32))
+    src = cv2.perspectiveTransform(canon.reshape(-1, 1, 2), m_inv).reshape(-1, 2)
+    w = int(max(np.linalg.norm(src[1] - src[0]), np.linalg.norm(src[2] - src[3])))
+    h = int(max(np.linalg.norm(src[3] - src[0]), np.linalg.norm(src[2] - src[1])))
+    if w < 2 or h < 2:
         return None
-    crop = _roi_slice(warped, roi_frac)
-    if crop.size == 0:
+    dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    m = cv2.getPerspectiveTransform(src.astype(np.float32), dst)
+    return cv2.warpPerspective(image, m, (w, h))
+
+
+def temp_has_digits(crop, params):
+    """True if the temperature ROI actually shows dark digit ink (vs blank), so
+    a failed read can be told apart from 'no number displayed'."""
+    if crop is None or crop.size == 0:
+        return False
+    mask = _local_dark_mask(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), params)
+    return float(mask.mean() / 255) > params["temp_ink_min"]
+
+
+def read_temperature(crop, params):
+    """OCR the 2-digit temperature with ssocr; None if unreadable/unavailable."""
+    if not HAVE_SSOCR or crop is None or crop.size == 0:
         return None
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     votes = []
-    for thr in (80, 100, 60, 90, 110):
+    # Spread of thresholds so both high-contrast (dark digits on light glass) and
+    # low-contrast/orange backlights (digits only ~120 gray) get binarized.
+    for thr in (60, 80, 100, 120, 140, 160):
         _, proc = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             cv2.imwrite(tmp.name, proc)
@@ -190,6 +218,7 @@ def _blank_result(status, error=None):
     return {
         "status": status,
         "temperature": None,
+        "temp_status": None,
         "flame_active": None,
         "flame_level": None,
         "heating_active": None,
@@ -199,9 +228,12 @@ def _blank_result(status, error=None):
     }
 
 
-def read_canonical(warped, rois=None, params=None, debug=False):
+def read_canonical(warped, rois=None, params=None, debug=False,
+                   full_image=None, corners=None):
     """Read all features from a flattened screen with the given ROIs (fractions).
-    No 'status' field - the caller sets that. Shared by analyze() and calibrator."""
+    No 'status' field - the caller sets that. Shared by analyze() and calibrator.
+    Pass full_image+corners so the temperature is OCR'd from the full-res original
+    (deskewed) instead of the downscaled canonical crop."""
     if rois is None or params is None:
         cfg_rois, cfg_params = load_config()
         rois = rois or cfg_rois
@@ -216,8 +248,21 @@ def read_canonical(warped, rois=None, params=None, debug=False):
     winter = ratios["winter_icon"] > on
     summer = ratios["summer_icon"] > on
 
+    if full_image is not None and corners is not None:
+        temp_crop = _warp_roi_fullres(full_image, corners, rois["temperature"])
+    else:
+        temp_crop = _roi_slice(warped, rois["temperature"])
+    # Three-way temperature outcome: read a number, digits present but OCR
+    # failed, or no digits displayed at all.
+    if not temp_has_digits(temp_crop, params):
+        temp, temp_status = None, "absent"
+    elif (temp := read_temperature(temp_crop, params)) is not None:
+        temp_status = "ok"
+    else:
+        temp_status = "ocr_fail"
     res = {
-        "temperature": read_temperature(warped, rois["temperature"], params),
+        "temperature": temp,
+        "temp_status": temp_status,
         "flame_active": ratios["flame_icon"] > on,
         "flame_level": detect_flame_level(gray, rois["bar_graph"], params),
         "heating_active": ratios["heating_icon"] > on,
@@ -249,7 +294,8 @@ def analyze(image, debug=False):
         return _blank_result("no_screen")          # obscured / moved / no glass
 
     warped, _ = warp_to_canonical(image, corners)
-    res = read_canonical(warped, rois, params, debug=debug)
+    res = read_canonical(warped, rois, params, debug=debug,
+                         full_image=image, corners=corners)
     res["status"] = "ok"
     return res
 

@@ -38,6 +38,7 @@ DISCOVERY_STATE_FILE = "/tmp/boiler_mqtt_discovery_sent"
 
 STATE_TOPIC = f"{TOPIC_PREFIX}/state"          # JSON with all readings
 AVAILABILITY_TOPIC = f"{TOPIC_PREFIX}/status"  # online / offline
+TEMP_AVAIL_TOPIC = f"{TOPIC_PREFIX}/temp_status"  # temperature readable this run?
 DETECTION_TOPIC = f"{TOPIC_PREFIX}/detection"  # ok / no_image / too_dark / no_screen
 
 # Human-readable text for each detection status.
@@ -84,7 +85,11 @@ def send_discovery(client):
             "id": "temperature", "name": "Kotel Teplota", "type": "sensor",
             "unit": "°C", "device_class": "temperature",
             "state_class": "measurement", "icon": "mdi:thermometer",
-            "value_template": "{{ value_json.temperature if value_json.temperature is not none else 'unavailable' }}",
+            # Numeric fallback + its own availability: a numeric sensor can't take
+            # a string "unavailable", so the extra availability topic hides it
+            # instead of leaving HA stuck on the last number.
+            "value_template": "{{ value_json.temperature if value_json.temperature is not none else 0 }}",
+            "availability": [{"topic": AVAILABILITY_TOPIC}, {"topic": TEMP_AVAIL_TOPIC}],
         },
         {
             "id": "flame_active", "name": "Kotel Plamen", "type": "binary_sensor",
@@ -95,7 +100,7 @@ def send_discovery(client):
         {
             "id": "flame_level", "name": "Kotel Plamen Úroveň", "type": "sensor",
             "icon": "mdi:fire", "state_class": "measurement",
-            "value_template": "{{ value_json.flame_level if value_json.flame_level is not none else 'unavailable' }}",
+            "value_template": "{{ value_json.flame_level if value_json.flame_level is not none else 0 }}",
         },
         {
             "id": "heating_active", "name": "Kotel Vytápění", "type": "binary_sensor",
@@ -114,6 +119,11 @@ def send_discovery(client):
             "icon": "mdi:sun-snowflake-variant",
             "value_template": "{{ value_json.mode if value_json.mode is not none else 'unavailable' }}",
         },
+        {   # ok / ocr_fail / absent -> lets you measure OCR success rate
+            "id": "temp_status", "name": "Kotel Teplota Stav", "type": "sensor",
+            "icon": "mdi:eye-check", "entity_category": "diagnostic",
+            "value_template": "{{ value_json.temp_status if value_json.temp_status is not none else 'unavailable' }}",
+        },
     ]
 
     for s in sensors:
@@ -122,12 +132,17 @@ def send_discovery(client):
             "name": s["name"],
             "unique_id": f"{DEVICE_ID}_{s['id']}",
             "state_topic": STATE_TOPIC,
-            "availability_topic": AVAILABILITY_TOPIC,
             "value_template": s["value_template"],
             "icon": s["icon"],
             "device": device_info,
         }
-        for k in ("unit", "device_class", "state_class", "payload_on", "payload_off"):
+        if "availability" in s:
+            payload["availability"] = s["availability"]
+            payload["availability_mode"] = "all"
+        else:
+            payload["availability_topic"] = AVAILABILITY_TOPIC
+        for k in ("unit", "device_class", "state_class", "payload_on",
+                  "payload_off", "entity_category"):
             if k in s:
                 payload[{"unit": "unit_of_measurement"}.get(k, k)] = s[k]
         client.publish(config_topic, json.dumps(payload), retain=True)
@@ -189,11 +204,14 @@ def main():
     # always-visible diagnostic status.
     client.publish(STATE_TOPIC, json.dumps(results))
     client.publish(AVAILABILITY_TOPIC, "online" if online else "offline", retain=True)
+    client.publish(TEMP_AVAIL_TOPIC,
+                   "online" if results["temperature"] is not None else "offline",
+                   retain=True)
     client.publish(DETECTION_TOPIC, STATUS_TEXT.get(status, status), retain=True)
 
     elapsed = time.time() - start
     if online:
-        temp = f"{results['temperature']}°C" if results["temperature"] is not None else "N/A"
+        temp = f"{results['temperature']}°C" if results["temperature"] is not None else results["temp_status"]
         lvl = f"{results['flame_level']}/6" if results["flame_level"] is not None else "N/A"
         print(f"T:{temp} F:{'ON' if results['flame_active'] else 'OFF'}({lvl}) "
               f"H:{'ON' if results['heating_active'] else 'OFF'} "

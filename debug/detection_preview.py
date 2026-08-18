@@ -46,7 +46,6 @@ STYLE = {
 
 def _label_for(name, res):
     """Short result string to draw next to a box."""
-    r = res.get("_ratios", {})
     if name == "temperature":
         return "Temp:%s" % (res["temperature"] if res["temperature"] is not None else "n/a")
     if name == "bar_graph":
@@ -59,7 +58,7 @@ def _label_for(name, res):
         on = res["mode"] == ("winter" if name == "winter_icon" else "summer")
     else:
         on = bool(res.get(field))
-    return f"{lbl}:{'ON' if on else 'off'} {r.get(name, 0):.2f}"
+    return f"{lbl}:{'ON' if on else 'off'}"
 
 
 def main(argv):
@@ -84,13 +83,16 @@ def main(argv):
 
         corners = detect_screen(img)
         warped, _ = warp_to_canonical(img, corners)
+        S = 2  # render larger so the labels stay readable
+        warped = cv2.resize(warped, (CANONICAL_W * S, CANONICAL_H * S))
         for key, roi_frac in rois.items():
             label, color = STYLE.get(key, (key, (255, 255, 255)))
-            y1 = int(roi_frac[0] * CANONICAL_H); y2 = int(roi_frac[1] * CANONICAL_H)
-            x1 = int(roi_frac[2] * CANONICAL_W); x2 = int(roi_frac[3] * CANONICAL_W)
-            cv2.rectangle(warped, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(warped, _label_for(key, res), (x1 + 2, y1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+            y1 = int(roi_frac[0] * CANONICAL_H * S); y2 = int(roi_frac[1] * CANONICAL_H * S)
+            x1 = int(roi_frac[2] * CANONICAL_W * S); x2 = int(roi_frac[3] * CANONICAL_W * S)
+            cv2.rectangle(warped, (x1, y1), (x2, y2), color, max(2, S))
+            ty = y1 - 8 if y1 > 30 else y1 + 30   # keep label on-screen at the top
+            cv2.putText(warped, _label_for(key, res), (x1 + 4, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * S, color, S, cv2.LINE_AA)
         cv2.imwrite(os.path.join(out_dir, f"result_{name}.jpg"), warped)
 
         print(f"[ OK ] {name:44s} Temp={res['temperature']} Mode={res['mode']} "
