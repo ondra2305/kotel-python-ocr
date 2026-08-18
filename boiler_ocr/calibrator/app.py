@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-Boiler Display ROI Calibration Tool - canonical edition.
-
-You edit the ROI boxes on the FULL camera image (so you can align them against
-the real display in context), but they are stored as fractions of the detected
-screen in canonical_roi_config.json, which boiler_vision.py reads at runtime.
-The backend converts between image pixels and screen fractions using the
-detected screen corners, so a calibration done once holds at any camera angle.
+ROI calibrator web UI. Edit the ROI boxes on the full camera image; they're
+stored as fractions of the detected screen (canonical_roi_config.json), so one
+calibration holds at any camera angle. The backend converts pixels <-> fractions
+via the detected screen corners.
 """
 
 import json

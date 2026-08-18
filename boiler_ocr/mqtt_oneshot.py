@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-Boiler Display Recognition with MQTT
-Version: 3.0 - automatic screen registration + health checks
-
-Downloads a photo of the boiler's LCD, locates the screen automatically (so it
-survives the camera being bumped or moved), reads every feature, and publishes
-to Home Assistant over MQTT. When the display cannot be read (camera down, lens
-covered, screen not found) the sensors are marked Unavailable instead of
-reporting wrong values, and a diagnostic "Detection Status" sensor says why.
-
-All the vision lives in boiler_vision.py; this file is just I/O + MQTT.
+Boiler LCD -> MQTT (Home Assistant). Downloads a photo, reads it via
+boiler_vision, and publishes. When the display can't be read (camera down, lens
+covered, screen not found) the sensors go Unavailable and a diagnostic
+"Detection Status" sensor says why. This file is just I/O + MQTT.
 """
 
 import json
@@ -83,8 +77,8 @@ def send_discovery(client):
         "manufacturer": "DIY",
     }
 
-    # Measurement sensors: share the availability topic, so they all show
-    # "Unavailable" together when the display cannot be read.
+    # Measurement sensors share the availability topic -> all go Unavailable
+    # together when the display can't be read.
     sensors = [
         {
             "id": "temperature", "name": "Kotel Teplota", "type": "sensor",
@@ -138,8 +132,8 @@ def send_discovery(client):
                 payload[{"unit": "unit_of_measurement"}.get(k, k)] = s[k]
         client.publish(config_topic, json.dumps(payload), retain=True)
 
-    # Diagnostic status sensor: its OWN (no) availability so it stays visible
-    # to explain WHY the others are unavailable.
+    # Diagnostic sensor has no availability topic, so it stays visible to
+    # explain why the others are Unavailable.
     status_cfg = {
         "name": "Kotel Detekce",
         "unique_id": f"{DEVICE_ID}_detection_status",

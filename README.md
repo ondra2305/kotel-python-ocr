@@ -18,11 +18,12 @@ boiler_ocr/                  the package
 debug/detection_preview.py   draw detection results on the sample images
 samples/                     calibration + feed sample images
 systemd/                     service / timer unit templates
+scripts/install.sh           Raspberry Pi installer (venv, ssocr, systemd)
 ```
 
 ## Running
 
-From the repo root, using the project venv (`.venv`, uv-managed):
+Needs Python 3.11+ and the project venv (`.venv`, uv-managed). From the repo root:
 
 ```bash
 # one detection cycle -> MQTT
@@ -35,12 +36,16 @@ From the repo root, using the project venv (`.venv`, uv-managed):
 .venv/bin/python debug/detection_preview.py
 ```
 
+The two entry points also run as plain scripts (e.g.
+`python boiler_ocr/calibrator/app.py`), which is handy from an IDE. Dependency
+majors are pinned in `pyproject.toml`.
+
 ## Configuration
 
 ROIs and detection parameters have working defaults in `boiler_vision.py`
 (`DEFAULT_ROIS`, `DEFAULT_PARAMS`). The calibrator writes overrides to
-`boiler_ocr/canonical_roi_config.json` (git-ignored); if present it is loaded on
-top of the defaults. ROIs are stored as fractions of the screen.
+`boiler_ocr/canonical_roi_config.json`; if present it is loaded on top of the
+defaults. ROIs are stored as fractions of the screen.
 
 Temperature OCR uses the external `ssocr` binary; install it on the device that
 runs `mqtt_oneshot` (it is not required for icon/level/mode detection).
@@ -70,3 +75,7 @@ Check it: `systemctl status boilerocr-mqtt-oneshot.timer` and
 The `systemd/*.service` / `*.timer` files are templates (defaults point at
 `/home/admin/boilerocr` and `User=admin`); the installer substitutes the real
 path and user, or you can copy and edit them by hand.
+
+---
+
+Created with Claude Opus.

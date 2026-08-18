@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """
-Automatic boiler-display screen detection.
+Locate the LCD screen and flatten it to a fixed canonical image.
 
-The whole idea in one sentence: the LCD glass is bright and is framed by a
-very dark bezel, so if we threshold the photo into "bright" vs "dark", the dark
-bezel becomes a black ring that isolates the glass as its own bright blob in the
-middle of the picture. We grab that blob, take its four corners, and warp it to
-a fixed-size canonical image. ROIs can then be defined once on the canonical
-image instead of in absolute pixel coordinates, so they survive camera moves.
+Idea: the glass is bright and framed by a very dark bezel, so a bright-vs-dark
+threshold turns the bezel into a black ring that isolates the glass as the
+central bright blob. Its four corners drive a perspective warp, so ROIs can be
+defined once on the canonical image and survive the camera moving.
 
-Run standalone to process the sample images and dump debug overlays:
-    python screen_detection.py                # processes SAMPLES below
-    python screen_detection.py img1.jpg ...   # processes given images
-Outputs go to ./screen_debug/
+Standalone geometry check (writes ./screen_debug/):
+    python -m boiler_ocr.screen_detection [img ...]
 """
 
 import cv2
@@ -43,39 +39,33 @@ def detect_screen(image):
     """
     h, w = image.shape[:2]
 
-    # 1. Grayscale + a light blur to calm down sensor noise.
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # 2. Split into bright vs dark. Otsu picks a good split point automatically,
-    #    which keeps this working whether the backlight is orange or green.
-    #    We threshold a bit below Otsu's level so the dim top of the glass (it
-    #    has a top-to-bottom brightness gradient) still counts as "bright".
+    # Bright/dark split via Otsu (adapts to orange/green backlight); go a bit
+    # below Otsu so the glass's dim top (it has a gradient) still reads bright.
     otsu_level, _ = cv2.threshold(gray, 0, 255,
                                   cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     bright = (gray > 0.5 * otsu_level).astype(np.uint8) * 255
 
-    # 3. Clean up: "open" erases thin bridges and small speckles, so a stray
-    #    bezel highlight touching the glass can't merge them into one blob.
-    ksize = max(5, (min(h, w) // 50) | 1)  # odd, scales with image size
+    # Open erases thin bridges/speckles so a bezel highlight can't fuse glass+foam.
+    ksize = max(5, (min(h, w) // 50) | 1)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
     bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, kernel)
 
-    # 4. The dark bezel ring separates the glass from the (also-bright) foam
-    #    surround, so keep the bright blob sitting on the image centre.
+    # The dark bezel ring separates glass from the bright foam -> keep the blob
+    # at the image centre (fall back to the biggest if the centre is on a symbol).
     num, labels = cv2.connectedComponents(bright)
     center_label = labels[h // 2, w // 2]
     if center_label == 0:
-        # Centre landed on a dark symbol; fall back to the biggest bright blob.
         counts = np.bincount(labels.ravel())
-        counts[0] = 0  # ignore the black background
+        counts[0] = 0
         if counts.max() == 0:
             return None
         center_label = counts.argmax()
     glass = (labels == center_label).astype(np.uint8) * 255
 
-    # 5. Fit the tightest rotated rectangle around that blob and read its 4
-    #    corners. The convex hull ignores small notches at the rounded corners.
+    # Tightest rotated rect of the blob; convex hull ignores rounded-corner notches.
     contours, _ = cv2.findContours(glass, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -86,7 +76,7 @@ def detect_screen(image):
     if rw == 0 or rh == 0:
         return None
 
-    # 6. Reject anything that doesn't look like the screen.
+    # Reject shapes that aren't screen-like (wrong aspect or size).
     aspect = max(rw, rh) / min(rw, rh)
     area_frac = cv2.contourArea(blob) / float(w * h)
     if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
@@ -126,11 +116,8 @@ def _map_points(points, M):
 
 
 def canonical_roi_to_image(canon_roi, corners, size=(CANONICAL_W, CANONICAL_H)):
-    """
-    Project a canonical ROI back onto a real image whose screen corners are
-    known. Returns the 4 polygon corners (they form a quadrilateral once the
-    camera is at an angle) as an int array ready for cv2.polylines.
-    """
+    """Project a canonical ROI back onto the image. Returns 4 int corners (a
+    quadrilateral when the camera is angled), ready for cv2.polylines."""
     cw, ch = size
     dst = np.array([[0, 0], [cw, 0], [cw, ch], [0, ch]], dtype=np.float32)
     # canonical -> image is the inverse of image -> canonical

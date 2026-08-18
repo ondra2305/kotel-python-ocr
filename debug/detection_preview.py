@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Debug harness: run the real detection (boiler_vision.analyze) on the sample
-images and draw the ROIs + the values read, so the results can be eyeballed.
+Debug harness: run boiler_vision.analyze on the sample images and draw each ROI
++ the value read, to eyeball results. Writes debug/screen_debug/result_*.jpg.
 
-    python detection_preview.py                # processes the sample set
-    python detection_preview.py img1.jpg ...   # processes given images
+    python debug/detection_preview.py [img ...]
 
-Output: screen_debug/result_<name>.jpg  and a console summary.
-Temperature needs ssocr; without it the temperature shows "n/a" here.
+Temperature needs ssocr; without it it shows None here.
 """
 
 import os

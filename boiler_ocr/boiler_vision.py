@@ -1,34 +1,10 @@
 #!/usr/bin/env python3
 """
-Boiler-display vision.
+Boiler-display vision: locate the LCD, flatten it, and read every feature from
+screen-relative ROIs (so readings survive the camera moving).
 
-Locates the LCD screen in a photo, flattens it to a fixed canonical image, and
-reads every feature from ROIs defined RELATIVE to the screen. Because the ROIs
-follow the screen's own four corners, the readings survive the camera being
-bumped or moved to a new angle - no manual re-calibration.
-
-Public API:
-    analyze(bgr_image) -> dict
-        status:            'ok' | 'no_image' | 'too_dark' | 'no_screen'
-        temperature:       int or None
-        flame_active:      bool or None
-        flame_level:       int (0..6) or None
-        heating_active:    bool or None
-        hot_water_active:  bool or None
-        mode:              'winter' | 'summer' | 'unknown' | None
-        error:             str or None (validation notes)
-    'status' == 'ok' means a screen was found and read; any other value means
-    the display could not be read and the measurements are None.
-
-Robustness notes (learned from real photos):
-  * Backlight ranges from bright orange to dim green, so icon detection is done
-    with a LOCAL adaptive threshold (relative to nearby glass), never a fixed
-    gray level.
-  * The bezel can cast a dark shadow that bleeds over the glass edge depending
-    on angle. That shadow always touches the screen border, while real icons
-    float in the interior, so we drop any dark region connected to the border.
-  * The flame bar-graph is made of solid filled blocks (not thin strokes), so it
-    uses its own relative threshold.
+Detection is backlight- and shadow-robust; the reasoning lives on the functions
+that do the work: _local_dark_mask, _edge_shadow_mask, detect_flame_level.
 """
 
 import cv2
@@ -102,7 +78,8 @@ def _roi_slice(image, roi_frac):
 
 
 def _local_dark_mask(gray, params):
-    """Pixels clearly darker than their small local neighborhood (icon ink)."""
+    """Icon ink: pixels darker than a SMALL local window. Small = immune to
+    backlight level and gradients (a wide dark patch is its own background)."""
     g = cv2.GaussianBlur(gray, (5, 5), 0)
     h, w = g.shape
     bs = min(params["adapt_block"], (min(h, w) - 1) | 1)
@@ -145,7 +122,8 @@ def _icon_ratio(icon_mask, roi_frac):
 
 
 def detect_flame_level(gray, roi_frac, params):
-    """Count filled bar-graph segments from the bottom up (relative threshold)."""
+    """Count filled bar-graph segments bottom-up. Bars are solid blocks, so
+    threshold relative to the bright glass rather than with the icon mask."""
     seg = _roi_slice(gray, roi_frac)
     if seg.size == 0:
         return None
@@ -222,12 +200,8 @@ def _blank_result(status, error=None):
 
 
 def read_canonical(warped, rois=None, params=None, debug=False):
-    """
-    Read every feature from an already-flattened canonical screen using the
-    given ROIs (fractions). Returns the measurements dict WITHOUT a 'status'
-    field (the caller decides that). Used by analyze() and by the calibrator's
-    live preview.
-    """
+    """Read all features from a flattened screen with the given ROIs (fractions).
+    No 'status' field - the caller sets that. Shared by analyze() and calibrator."""
     if rois is None or params is None:
         cfg_rois, cfg_params = load_config()
         rois = rois or cfg_rois
@@ -259,7 +233,8 @@ def read_canonical(warped, rois=None, params=None, debug=False):
 
 
 def analyze(image, debug=False):
-    """Read the whole display. See module docstring for the returned dict."""
+    """Read the whole display; returns the readings dict with a 'status' field
+    ('ok', or a failure reason meaning the values are None)."""
     rois, params = load_config()
 
     if image is None:
