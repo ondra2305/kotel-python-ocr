@@ -36,7 +36,7 @@ DEFAULT_PARAMS = {
     "icon_on_ratio": 0.08,       # min dark-stroke coverage to call an icon "on"
     "temp_min": 30,
     "temp_max": 90,
-    "temp_ink_min": 0.02,        # min ink coverage in the temp ROI to call digits present
+    "temp_ink_min": 0.10,        # min ink coverage in the temp ROI to call digits present
     "bar_segments": 6,
     "bar_fill_threshold": 0.30,
     "min_frame_brightness": 15,  # whole-frame mean below this = lens covered
@@ -165,13 +165,29 @@ def _warp_roi_fullres(image, corners, roi_frac):
     return cv2.warpPerspective(image, m, (w, h))
 
 
+def _flatfield(gray):
+    """Divide out a bright-background estimate to remove the display's
+    brightness gradient (bg -> ~200); dark digits stay dark. This is what lets
+    both the digit-present check and OCR cope with dim, uneven backlights."""
+    k = max(15, (min(gray.shape) // 3) | 1)
+    bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE,
+                          cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return cv2.divide(gray, bg, scale=200)
+
+
 def temp_has_digits(crop, params):
-    """True if the temperature ROI actually shows dark digit ink (vs blank), so
-    a failed read can be told apart from 'no number displayed'."""
+    """True if the temperature ROI actually shows digit ink (vs blank), so a
+    failed read can be told apart from 'no number displayed'. Flat-fielding
+    handles the gradient; the component filter drops glass grain so thick, faint
+    digits still register while a blank screen does not."""
     if crop is None or crop.size == 0:
         return False
-    mask = _local_dark_mask(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), params)
-    return float(mask.mean() / 255) > params["temp_ink_min"]
+    mask = (_flatfield(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)) < 140).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    ink = sum(stats[i, cv2.CC_STAT_AREA] for i in range(1, n)
+              if stats[i, cv2.CC_STAT_AREA] >= 60) / mask.size
+    return ink > params["temp_ink_min"]
 
 
 def read_temperature(crop, params):
@@ -180,8 +196,10 @@ def read_temperature(crop, params):
         return None
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     votes = []
-    # Spread of thresholds so both high-contrast (dark digits on light glass) and
-    # low-contrast/orange backlights (digits only ~120 gray) get binarized.
+    # Grey only, across a spread of thresholds (covers high-contrast and dim /
+    # orange backlights). Colour channels and flat-fielding recover a few dim
+    # frames but AMPLIFY faint LCD ghost segments into confident misreads
+    # (a "6" reads as "8"), which is worse than a miss for a temperature.
     for thr in (60, 80, 100, 120, 140, 160):
         _, proc = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -204,10 +222,9 @@ def read_temperature(crop, params):
     if not votes:
         return None
     winner = max(set(votes), key=votes.count)
-    # require agreement (>=2 thresholds) unless only one produced anything
-    if votes.count(winner) >= 2 or len(votes) == 1:
-        return winner
-    return None
+    # Require >=2 agreeing reads. A lone read on a degraded frame is usually a
+    # misread, and a wrong temperature is worse than none.
+    return winner if votes.count(winner) >= 2 else None
 
 
 # ---------------------------------------------------------------------------
