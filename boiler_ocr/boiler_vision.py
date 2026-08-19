@@ -296,26 +296,22 @@ def analyze(image, debug=False):
     warped, _ = warp_to_canonical(image, corners)
     res = read_canonical(warped, rois, params, debug=debug,
                          full_image=image, corners=corners)
-    res["status"] = "ok"
+    # A consistency violation means something was misread -> don't trust any of it.
+    res["status"] = "inconsistent" if res["error"] else "ok"
     return res
 
 
 def _validate(res):
-    """Cross-check for logically impossible combinations; note them in error."""
+    """Flag logically impossible combinations. Their presence means the vision
+    misread, so the whole reading is untrusted (analyze turns this into an
+    'inconsistent' status) - we do NOT guess a correction."""
     notes = []
     if res["heating_active"] and res["hot_water_active"]:
-        # boiler drives heating OR hot water, not both at once
-        res["heating_active"] = None
-        res["hot_water_active"] = None
-        notes.append("heating+hot_water conflict")
-
+        notes.append("heating+hot_water both on")     # boiler drives one, not both
     lvl, flame = res["flame_level"], res["flame_active"]
     if lvl is not None and flame is not None:
-        if lvl > 0 and not flame:
-            res["flame_active"] = True
-            notes.append("level>0 but flame icon off")
-        elif flame and lvl == 0:
-            res["flame_level"] = 1
-            notes.append("flame icon on but level 0")
-    if notes:
-        res["error"] = "; ".join(notes)
+        if flame and lvl == 0:
+            notes.append("flame on but level 0")
+        elif not flame and lvl > 0:
+            notes.append("flame off but level>0")
+    res["error"] = "; ".join(notes) if notes else None

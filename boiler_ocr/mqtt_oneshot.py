@@ -47,6 +47,7 @@ STATUS_TEXT = {
     "no_image": "Camera unavailable",
     "too_dark": "Too dark / lens covered",
     "no_screen": "Screen not found",
+    "inconsistent": "Inconsistent readings",
 }
 
 
@@ -217,10 +218,9 @@ def main():
               f"H:{'ON' if results['heating_active'] else 'OFF'} "
               f"W:{'ON' if results['hot_water_active'] else 'OFF'} "
               f"Mode:{results['mode']} [{elapsed:.1f}s]")
-        if results["error"]:
-            print(f"Validation: {results['error']}")
     else:
-        print(f"UNAVAILABLE: {STATUS_TEXT.get(status, status)} [{elapsed:.1f}s]")
+        detail = f" ({results['error']})" if results.get("error") else ""
+        print(f"UNAVAILABLE: {STATUS_TEXT.get(status, status)}{detail} [{elapsed:.1f}s]")
 
     client.loop_stop()
     client.disconnect()
